@@ -6,6 +6,7 @@ final class StocksListViewController: UIViewController {
 
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private let activityIndicator = UIActivityIndicatorView(style: .large)
+    private let updatedAtItem = UIBarButtonItem(title: nil, style: .plain, target: nil, action: nil)
 
     private lazy var searchController: UISearchController = {
         let controller = UISearchController(searchResultsController: nil)
@@ -34,6 +35,9 @@ final class StocksListViewController: UIViewController {
 
         title = "Stocks"
         view.backgroundColor = .systemBackground
+        updatedAtItem.isEnabled = false
+        navigationItem.rightBarButtonItem = updatedAtItem
+        navigationItem.prompt = nil
         navigationItem.searchController = searchController
         navigationItem.hidesSearchBarWhenScrolling = false
 
@@ -77,6 +81,7 @@ final class StocksListViewController: UIViewController {
         switch state {
         case .idle:
             activityIndicator.stopAnimating()
+            updatedAtItem.title = nil
             updateEmptyMessage(nil)
         case .loading:
             activityIndicator.startAnimating()
@@ -86,11 +91,12 @@ final class StocksListViewController: UIViewController {
 
             let formatter = DateFormatter()
             formatter.timeStyle = .medium
-            navigationItem.prompt = "Updated: \(formatter.string(from: updatedAt))"
+            updatedAtItem.title = "Updated: \(formatter.string(from: updatedAt))"
 
             updateEmptyMessage(stocks.isEmpty ? "No matching stocks found." : nil)
         case .error(let message):
             activityIndicator.stopAnimating()
+            updatedAtItem.title = nil
             updateEmptyMessage(message)
         }
     }

@@ -11,6 +11,14 @@ struct APIConfiguration {
     let rapidAPIKey: String
     let rapidAPIHost: String
 
+    init(
+        rapidAPIKey: String,
+        rapidAPIHost: String = "yh-finance.p.rapidapi.com"
+    ) {
+        self.rapidAPIKey = rapidAPIKey
+        self.rapidAPIHost = rapidAPIHost
+    }
+
     init(bundle: Bundle = .main) throws {
         let key = (bundle.object(forInfoDictionaryKey: "RAPIDAPI_KEY") as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let host = (bundle.object(forInfoDictionaryKey: "RAPIDAPI_HOST") as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

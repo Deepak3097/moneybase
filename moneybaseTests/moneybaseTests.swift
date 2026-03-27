@@ -43,6 +43,38 @@ final class moneybaseTests: XCTestCase {
     }
 
     @MainActor
+    func testSearchTrimsWhitespace() async {
+        let repository = MockStockRepository()
+        repository.stocksResult = .success(Self.sampleStocks)
+
+        let viewModel = StocksListViewModel(repository: repository)
+        await viewModel.refresh()
+
+        viewModel.updateSearch(text: "  aapl ")
+        XCTAssertEqual(viewModel.filteredStocks.map(\.symbol), ["AAPL"])
+    }
+
+    @MainActor
+    func testStockAtReturnsNilWhenIndexOutOfRange() async {
+        let repository = MockStockRepository()
+        repository.stocksResult = .success(Self.sampleStocks)
+
+        let viewModel = StocksListViewModel(repository: repository)
+        await viewModel.refresh()
+
+        XCTAssertNil(viewModel.stock(at: 99))
+    }
+
+    @MainActor
+    func testUpdateSearchBeforeFirstRefreshKeepsIdleState() async {
+        let repository = MockStockRepository()
+        let viewModel = StocksListViewModel(repository: repository)
+
+        viewModel.updateSearch(text: "AAPL")
+        XCTAssertEqual(viewModel.state, .idle)
+    }
+
+    @MainActor
     func testRefreshPublishesErrorOnFailure() async {
         let repository = MockStockRepository()
         repository.stocksResult = .failure(MockError.testFailure)
@@ -100,6 +132,222 @@ final class moneybaseTests: XCTestCase {
         XCTAssertEqual(detail.displayName, "AAPL")
     }
 
+    @MainActor
+    func testDetailViewModelPublishesErrorOnFailure() async {
+        let repository = MockStockRepository()
+        repository.detailResult = .failure(MockError.testFailure)
+
+        let viewModel = StockDetailViewModel(repository: repository)
+        await viewModel.load(symbol: "AAPL")
+
+        guard case .error(let message) = viewModel.state else {
+            return XCTFail("Expected error state")
+        }
+
+        XCTAssertTrue(message.contains("failure"))
+    }
+
+    func testStockSummaryEndpointBuildsExpectedURL() {
+        let url = ApiEndpoint.stockSummary(symbol: "AAPL", region: "US")
+            .makeURL(host: "yh-finance.p.rapidapi.com")
+
+        XCTAssertNotNil(url)
+        XCTAssertEqual(url?.path, "/stock/get-fundamentals")
+
+        let components = URLComponents(url: url!, resolvingAgainstBaseURL: false)
+        let queryItems = components?.queryItems ?? []
+
+        XCTAssertTrue(queryItems.contains(URLQueryItem(name: "symbol", value: "AAPL")))
+        XCTAssertTrue(queryItems.contains(URLQueryItem(name: "region", value: "US")))
+        XCTAssertTrue(queryItems.contains(URLQueryItem(name: "modules", value: "summaryProfile")))
+    }
+
+    @MainActor
+    func testFetchStocksFiltersInvalidEntriesAndSortsBySymbol() async throws {
+        let client = MockHTTPClient()
+        client.nextData = Data(
+            """
+            {
+              "marketSummaryAndSparkResponse": {
+                "result": [
+                  {
+                    "symbol": "MSFT",
+                    "shortName": "Microsoft Corp.",
+                    "fullExchangeName": "NasdaqGS",
+                    "regularMarketPrice": { "raw": 421.01 },
+                    "regularMarketChangePercent": { "raw": -0.23 }
+                  },
+                  {
+                    "symbol": "",
+                    "shortName": "Invalid"
+                  },
+                  {
+                    "symbol": "AAPL",
+                    "shortName": "Apple Inc.",
+                    "fullExchangeName": "NasdaqGS",
+                    "regularMarketPrice": { "raw": 201.23 },
+                    "regularMarketChangePercent": { "raw": 1.12 }
+                  }
+                ]
+              }
+            }
+            """.utf8
+        )
+
+        let repository = FinanceRepository(
+            config: APIConfiguration(rapidAPIKey: "test-key", rapidAPIHost: "example.com"),
+            client: client
+        )
+
+        let result = try await repository.fetchStocks()
+
+        XCTAssertEqual(result.map(\.symbol), ["AAPL", "MSFT"])
+        XCTAssertEqual(client.requestedURLs.first?.path, "/market/v2/get-summary")
+    }
+
+    @MainActor
+    func testFetchStocksThrowsNoResultsWhenPayloadIsEmpty() async {
+        let client = MockHTTPClient()
+        client.nextData = Data(
+            """
+            {
+              "marketSummaryAndSparkResponse": {
+                "result": []
+              }
+            }
+            """.utf8
+        )
+
+        let repository = FinanceRepository(
+            config: APIConfiguration(rapidAPIKey: "test-key", rapidAPIHost: "example.com"),
+            client: client
+        )
+
+        do {
+            _ = try await repository.fetchStocks()
+            XCTFail("Expected noResults error")
+        } catch let error as APIError {
+            guard case .noResults(let message) = error else {
+                return XCTFail("Expected noResults error")
+            }
+            XCTAssertNil(message)
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
+    @MainActor
+    func testFetchStockDetailMapsSummaryProfile() async throws {
+        let client = MockHTTPClient()
+        client.nextData = Data(
+            """
+            {
+              "quoteSummary": {
+                "result": [
+                  {
+                    "summaryProfile": {
+                      "name": "Apple Inc.",
+                      "sector": "Technology",
+                      "industry": "Consumer Electronics",
+                      "industryDisp": "Consumer Electronics",
+                      "website": "https://www.apple.com",
+                      "phone": "1-408-996-1010",
+                      "address1": "One Apple Park Way",
+                      "city": "Cupertino",
+                      "zip": "95014",
+                      "country": "United States",
+                      "longBusinessSummary": "Designs and sells consumer devices."
+                    }
+                  }
+                ]
+              }
+            }
+            """.utf8
+        )
+
+        let repository = FinanceRepository(
+            config: APIConfiguration(rapidAPIKey: "test-key", rapidAPIHost: "example.com"),
+            client: client
+        )
+
+        let detail = try await repository.fetchStockDetail(symbol: "AAPL")
+
+        XCTAssertEqual(detail.symbol, "AAPL")
+        XCTAssertEqual(detail.displayName, "Apple Inc.")
+        XCTAssertEqual(detail.sector, "Technology")
+        XCTAssertEqual(detail.industry, "Consumer Electronics")
+        XCTAssertEqual(detail.website, "https://www.apple.com")
+        XCTAssertEqual(detail.phone, "1-408-996-1010")
+        XCTAssertEqual(detail.address, "One Apple Park Way, Cupertino, 95014, United States")
+        XCTAssertEqual(detail.businessSummary, "Designs and sells consumer devices.")
+        XCTAssertEqual(client.requestedURLs.first?.path, "/stock/get-fundamentals")
+    }
+
+    @MainActor
+    func testFetchStockDetailFallsBackToDescriptionWhenLongSummaryMissing() async throws {
+        let client = MockHTTPClient()
+        client.nextData = Data(
+            """
+            {
+              "quoteSummary": {
+                "result": [
+                  {
+                    "summaryProfile": {
+                      "name": "NVIDIA Corporation",
+                      "description": "Accelerated computing company."
+                    }
+                  }
+                ]
+              }
+            }
+            """.utf8
+        )
+
+        let repository = FinanceRepository(
+            config: APIConfiguration(rapidAPIKey: "test-key", rapidAPIHost: "example.com"),
+            client: client
+        )
+
+        let detail = try await repository.fetchStockDetail(symbol: "NVDA")
+        XCTAssertEqual(detail.displayName, "NVIDIA Corporation")
+        XCTAssertEqual(detail.businessSummary, "Accelerated computing company.")
+    }
+
+    @MainActor
+    func testFetchStockDetailSurfacesAPIErrorDescriptionWhenNoResult() async {
+        let client = MockHTTPClient()
+        client.nextData = Data(
+            """
+            {
+              "quoteSummary": {
+                "result": [],
+                "error": {
+                  "code": "Not Found",
+                  "description": "No fundamentals available"
+                }
+              }
+            }
+            """.utf8
+        )
+
+        let repository = FinanceRepository(
+            config: APIConfiguration(rapidAPIKey: "test-key", rapidAPIHost: "example.com"),
+            client: client
+        )
+
+        do {
+            _ = try await repository.fetchStockDetail(symbol: "UNKNOWN")
+            XCTFail("Expected noResults error")
+        } catch let error as APIError {
+            guard case .noResults(let message) = error else {
+                return XCTFail("Expected noResults error")
+            }
+            XCTAssertEqual(message, "No fundamentals available")
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
     private static let sampleStocks: [StockListItem] = [
         StockListItem(symbol: "AAPL", displayName: "Apple Inc.", exchangeName: "NasdaqGS", price: 201.23, changePercent: 1.12),
         StockListItem(symbol: "MSFT", displayName: "Microsoft Corp.", exchangeName: "NasdaqGS", price: 421.01, changePercent: -0.23),
@@ -133,5 +381,23 @@ private final class MockStockRepository: StockRepository {
     func fetchStockDetail(symbol: String) async throws -> StockDetail {
         fetchStockDetailCallCount += 1
         return try detailResult.get()
+    }
+}
+
+private final class MockHTTPClient: HTTPClient {
+    var nextData = Data()
+    var nextError: Error?
+    private(set) var requestedURLs: [URL] = []
+    private(set) var requestedHeaders: [[String: String]] = []
+
+    func get(url: URL, headers: [String : String]) async throws -> Data {
+        requestedURLs.append(url)
+        requestedHeaders.append(headers)
+
+        if let nextError {
+            throw nextError
+        }
+
+        return nextData
     }
 }
